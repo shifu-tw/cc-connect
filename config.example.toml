@@ -985,6 +985,7 @@ app_secret = "your-feishu-app-secret"
 # port = "8080"
 # callback_path = "/callback"
 # allow_from = "*"  # Allowed LINE user IDs / 允许的 LINE 用户 ID
+# group_reply_all = false  # If true, respond to ALL group/room messages without @mention / 设为 true 群聊无需 @ 也响应
 
 # Weibo / 微博私信 (uncomment to enable / 取消注释以启用)
 # 1. Register an app at https://open.weibo.com/ via 微博龙虾助手

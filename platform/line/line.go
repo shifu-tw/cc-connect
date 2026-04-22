@@ -29,15 +29,16 @@ type replyContext struct {
 }
 
 type Platform struct {
-	channelSecret string
-	channelToken  string
-	allowFrom     string
-	port          string
-	callbackPath  string
-	bot           *messaging_api.MessagingApiAPI
-	server        *http.Server
-	handler       core.MessageHandler
-	userNameCache sync.Map // userID -> display name
+	channelSecret  string
+	channelToken   string
+	allowFrom      string
+	port           string
+	callbackPath   string
+	groupReplyAll  bool
+	bot            *messaging_api.MessagingApiAPI
+	server         *http.Server
+	handler        core.MessageHandler
+	userNameCache  sync.Map // userID -> display name
 	groupNameCache sync.Map // groupID -> group name
 }
 
@@ -57,6 +58,7 @@ func New(opts map[string]any) (core.Platform, error) {
 	if path == "" {
 		path = "/callback"
 	}
+	groupReplyAll, _ := opts["group_reply_all"].(bool)
 
 	core.CheckAllowFrom("line", allowFrom)
 	return &Platform{
@@ -65,6 +67,7 @@ func New(opts map[string]any) (core.Platform, error) {
 		allowFrom:     allowFrom,
 		port:          port,
 		callbackPath:  path,
+		groupReplyAll: groupReplyAll,
 	}, nil
 }
 
@@ -134,18 +137,36 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 			chatName = p.resolveGroupName(targetID)
 		}
 
+		// In group/room: require @bot mention unless group_reply_all=true.
+		// Non-text messages (image/audio) in groups have no mention concept —
+		// skip them when group_reply_all=false to stay consistent with other adapters.
+		isGroupLike := targetType == "group" || targetType == "room"
+		requireMention := isGroupLike && !p.groupReplyAll
+
 		switch m := e.Message.(type) {
 		case webhook.TextMessageContent:
-			slog.Debug("line: message received", "user", userID, "text_len", len(m.Text))
+			text := m.Text
+			if requireMention {
+				if !isBotMentioned(m.Mention) {
+					slog.Debug("line: group message without @bot mention, skip", "user", userID)
+					continue
+				}
+				text = stripBotMention(text, m.Mention)
+			}
+			slog.Debug("line: message received", "user", userID, "text_len", len(text))
 			p.handler(p, &core.Message{
 				SessionKey: sessionKey, Platform: "line",
 				MessageID: m.Id,
-				UserID: userID, UserName: p.resolveUserName(userID),
+				UserID:    userID, UserName: p.resolveUserName(userID),
 				ChatName: chatName,
-				Content: m.Text, ReplyCtx: rctx,
+				Content:  text, ReplyCtx: rctx,
 			})
 
 		case webhook.ImageMessageContent:
+			if requireMention {
+				slog.Debug("line: skip group image (no @mention concept for images)", "user", userID)
+				continue
+			}
 			slog.Debug("line: image received", "user", userID)
 			imgData, err := p.downloadContent(m.Id)
 			if err != nil {
@@ -155,13 +176,17 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 			p.handler(p, &core.Message{
 				SessionKey: sessionKey, Platform: "line",
 				MessageID: m.Id,
-				UserID: userID, UserName: p.resolveUserName(userID),
+				UserID:    userID, UserName: p.resolveUserName(userID),
 				ChatName: chatName,
-				Images:  []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
+				Images:   []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
 				ReplyCtx: rctx,
 			})
 
 		case webhook.AudioMessageContent:
+			if requireMention {
+				slog.Debug("line: skip group audio (no @mention concept for audio)", "user", userID)
+				continue
+			}
 			slog.Debug("line: audio received", "user", userID)
 			audioData, err := p.downloadContent(m.Id)
 			if err != nil {
@@ -224,6 +249,53 @@ func (p *Platform) resolveGroupName(groupID string) string {
 	}
 	p.groupNameCache.Store(groupID, name)
 	return name
+}
+
+// isBotMentioned reports whether the webhook's bot itself is mentioned.
+// LINE's SDK sets UserMentionee.IsSelf = true when the mentioned user is the
+// receiving bot. We treat @all as NOT a direct mention (matches Discord's
+// respond_to_at_everyone_and_here default behavior).
+func isBotMentioned(mention *webhook.Mention) bool {
+	if mention == nil {
+		return false
+	}
+	for _, m := range mention.Mentionees {
+		if u, ok := m.(webhook.UserMentionee); ok && u.IsSelf {
+			return true
+		}
+	}
+	return false
+}
+
+// stripBotMention removes the @bot substring(s) from text using the Index/Length
+// offsets provided by LINE. Iterates from the last mention backwards so earlier
+// offsets stay valid.
+func stripBotMention(text string, mention *webhook.Mention) string {
+	if mention == nil {
+		return text
+	}
+	runes := []rune(text)
+	// Collect self-mention ranges
+	type rng struct{ start, end int }
+	var ranges []rng
+	for _, m := range mention.Mentionees {
+		u, ok := m.(webhook.UserMentionee)
+		if !ok || !u.IsSelf {
+			continue
+		}
+		start := int(u.Index)
+		end := start + int(u.Length)
+		if start < 0 || end > len(runes) || start >= end {
+			continue
+		}
+		ranges = append(ranges, rng{start, end})
+	}
+	// Remove from back to front
+	for i := len(ranges) - 1; i >= 0; i-- {
+		r := ranges[i]
+		runes = append(runes[:r.start], runes[r.end:]...)
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func extractSource(src webhook.SourceInterface) (targetID, targetType, userID string) {
