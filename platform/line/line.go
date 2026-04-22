@@ -1,7 +1,11 @@
 package line
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -109,9 +113,32 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 }
 
 func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
+		slog.Error("line: read body failed", "error", readErr)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
 	cb, err := webhook.ParseRequest(p.channelSecret, r)
 	if err != nil {
-		slog.Error("line: parse webhook failed", "error", err)
+		mac := hmac.New(sha256.New, []byte(p.channelSecret))
+		mac.Write(bodyBytes)
+		expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+		snippet := string(bodyBytes)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		slog.Error("line: parse webhook failed",
+			"error", err,
+			"received_sig", r.Header.Get("X-Line-Signature"),
+			"expected_sig", expected,
+			"secret_prefix", firstN(p.channelSecret, 6),
+			"secret_len", len(p.channelSecret),
+			"body_len", len(bodyBytes),
+			"body_snippet", snippet,
+		)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -413,4 +440,11 @@ func (p *Platform) Stop() error {
 		return p.server.Shutdown(context.Background())
 	}
 	return nil
+}
+
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
