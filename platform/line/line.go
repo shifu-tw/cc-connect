@@ -34,7 +34,7 @@ type Platform struct {
 	allowFrom      string
 	port           string
 	callbackPath   string
-	groupReplyAll  bool
+	groupReplyAll  bool // if true, respond to ALL group messages without @mention
 	bot            *messaging_api.MessagingApiAPI
 	server         *http.Server
 	handler        core.MessageHandler
@@ -72,6 +72,14 @@ func New(opts map[string]any) (core.Platform, error) {
 }
 
 func (p *Platform) Name() string { return "line" }
+
+// FormattingInstructions tells the agent to avoid Markdown since LINE is plain text.
+func (p *Platform) FormattingInstructions() string {
+	return `This platform is LINE — plain text only.
+Do NOT use Markdown formatting (no **, ##, ` + "``" + `, []() etc.).
+Use plain text, emoji, and line breaks for structure.
+Use「」for quotes, ▸ or • for bullet points, and blank lines for separation.`
+}
 
 func (p *Platform) Start(handler core.MessageHandler) error {
 	p.handler = handler
@@ -143,6 +151,9 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 		isGroupLike := targetType == "group" || targetType == "room"
 		requireMention := isGroupLike && !p.groupReplyAll
 
+		// Show loading animation immediately so user knows we're processing
+		go p.showLoading(userID)
+
 		switch m := e.Message.(type) {
 		case webhook.TextMessageContent:
 			text := m.Text
@@ -158,8 +169,8 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 				SessionKey: sessionKey, Platform: "line",
 				MessageID: m.Id,
 				UserID:    userID, UserName: p.resolveUserName(userID),
-				ChatName: chatName,
-				Content:  text, ReplyCtx: rctx,
+				ChatName:  chatName,
+				Content:   text, ReplyCtx: rctx,
 			})
 
 		case webhook.ImageMessageContent:
@@ -177,9 +188,9 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 				SessionKey: sessionKey, Platform: "line",
 				MessageID: m.Id,
 				UserID:    userID, UserName: p.resolveUserName(userID),
-				ChatName: chatName,
-				Images:   []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
-				ReplyCtx: rctx,
+				ChatName:  chatName,
+				Images:    []core.ImageAttachment{{MimeType: "image/jpeg", Data: imgData}},
+				ReplyCtx:  rctx,
 			})
 
 		case webhook.AudioMessageContent:
@@ -200,8 +211,8 @@ func (p *Platform) webhookHandler(w http.ResponseWriter, r *http.Request) {
 			p.handler(p, &core.Message{
 				SessionKey: sessionKey, Platform: "line",
 				MessageID: m.Id,
-				UserID: userID, UserName: p.resolveUserName(userID),
-				ChatName: chatName,
+				UserID:    userID, UserName: p.resolveUserName(userID),
+				ChatName:  chatName,
 				Audio: &core.AudioAttachment{
 					MimeType: "audio/m4a",
 					Data:     audioData,
@@ -251,10 +262,23 @@ func (p *Platform) resolveGroupName(groupID string) string {
 	return name
 }
 
+// showLoading displays a typing indicator for the user (up to 60 seconds).
+func (p *Platform) showLoading(userID string) {
+	if p.bot == nil || userID == "" {
+		return
+	}
+	_, err := p.bot.ShowLoadingAnimation(
+		&messaging_api.ShowLoadingAnimationRequest{
+			ChatId:         userID,
+			LoadingSeconds: 60,
+		},
+	)
+	if err != nil {
+		slog.Debug("line: show loading failed", "error", err)
+	}
+}
+
 // isBotMentioned reports whether the webhook's bot itself is mentioned.
-// LINE's SDK sets UserMentionee.IsSelf = true when the mentioned user is the
-// receiving bot. We treat @all as NOT a direct mention (matches Discord's
-// respond_to_at_everyone_and_here default behavior).
 func isBotMentioned(mention *webhook.Mention) bool {
 	if mention == nil {
 		return false
@@ -275,7 +299,6 @@ func stripBotMention(text string, mention *webhook.Mention) string {
 		return text
 	}
 	runes := []rune(text)
-	// Collect self-mention ranges
 	type rng struct{ start, end int }
 	var ranges []rng
 	for _, m := range mention.Mentionees {
@@ -290,7 +313,6 @@ func stripBotMention(text string, mention *webhook.Mention) string {
 		}
 		ranges = append(ranges, rng{start, end})
 	}
-	// Remove from back to front
 	for i := len(ranges) - 1; i >= 0; i-- {
 		r := ranges[i]
 		runes = append(runes[:r.start], runes[r.end:]...)
