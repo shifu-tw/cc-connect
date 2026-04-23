@@ -101,11 +101,23 @@
 
 ## 老闆常問題型 + 處理 SOP
 
-### Q1：「有錯誤嗎？今天的」
+### Q1：「有錯誤嗎？今天的 / 健康嗎 / process 還在嗎」
+
+**最快**：跑 `scripts/healthcheck.sh`（或加 `--json` 給 cron / 程式吃）
+
+```bash
+/Users/aishifu/cc-connect/scripts/healthcheck.sh
+```
+
+一次全查完：兩個 instance 的 `/api/v1/status`、errors 按 category 聚合、turns 統計、最慢 turn 預覽。退出碼：
+- `0` 全綠
+- `1` 有高嚴重度錯誤（session_spawn_failed / agent_died_unexpectedly / line_push_failed）
+- `2` 有 instance 不回應
+
+若要用 jq 自己撈特定內容：
 
 ```bash
 TODAY=$(date +%F)
-# joey-brain 和 cc-ops 兩個 project 都要掃
 jq -s 'group_by(.category) | map({category: .[0].category, count: length, latest: (max_by(.ts) | .ts)})' \
   ~/.cc-connect/logs/*/"$TODAY"/errors.jsonl \
   ~/.cc-connect-ops/logs/*/"$TODAY"/errors.jsonl 2>/dev/null

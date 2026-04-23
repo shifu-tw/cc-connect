@@ -374,9 +374,16 @@ func (pp *pendingPermission) resolve() {
 func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath string, lang Language) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	// Derive logs dir as sibling of sessions dir (e.g. ~/.cc-connect/sessions → ~/.cc-connect/logs).
+	// sessionStorePath is usually <DataDir>/sessions/<name>_<hash>.json, but legacy setups
+	// may place it directly in <DataDir>/<name>_<hash>.json — only strip the "sessions" dir
+	// when it's actually present, otherwise sit next to the session file.
 	var logsDir string
 	if sessionStorePath != "" {
-		logsDir = filepath.Join(filepath.Dir(sessionStorePath), "logs")
+		parent := filepath.Dir(sessionStorePath)
+		if filepath.Base(parent) == "sessions" {
+			parent = filepath.Dir(parent)
+		}
+		logsDir = filepath.Join(parent, "logs")
 	}
 	e := &Engine{
 		name:                  name,
