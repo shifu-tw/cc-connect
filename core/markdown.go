@@ -6,17 +6,19 @@ import (
 )
 
 var (
-	reCodeBlock   = regexp.MustCompile("(?s)```[a-zA-Z]*\n?(.*?)```")
-	reInlineCode  = regexp.MustCompile("`([^`]+)`")
-	reBoldAst     = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	reBoldUnd     = regexp.MustCompile(`__(.+?)__`)
-	reItalicAst   = regexp.MustCompile(`\*(.+?)\*`)
-	reItalicUnd   = regexp.MustCompile(`_(.+?)_`)
-	reStrike      = regexp.MustCompile(`~~(.+?)~~`)
-	reLink        = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	reHeading     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
-	reHorizontal  = regexp.MustCompile(`(?m)^---+\s*$`)
-	reBlockquote  = regexp.MustCompile(`(?m)^>\s?`)
+	reCodeBlock      = regexp.MustCompile("(?s)```[a-zA-Z]*\n?(.*?)```")
+	reInlineCode     = regexp.MustCompile("`([^`]+)`")
+	reBoldAst        = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reBoldUnd        = regexp.MustCompile(`__(.+?)__`)
+	reItalicAst      = regexp.MustCompile(`\*(.+?)\*`)
+	reItalicUnd      = regexp.MustCompile(`_(.+?)_`)
+	reStrike         = regexp.MustCompile(`~~(.+?)~~`)
+	reLink           = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reHeading        = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+	reHorizontal     = regexp.MustCompile(`(?m)^---+\s*$`)
+	reBlockquote     = regexp.MustCompile(`(?m)^>\s?`)
+	reTableSeparator = regexp.MustCompile(`(?m)^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$`)
+	reTableRow       = regexp.MustCompile(`(?m)^[ \t]*\|(.+)\|[ \t]*$`)
 )
 
 // StripMarkdown converts Markdown-formatted text to clean plain text.
@@ -46,6 +48,21 @@ func StripMarkdown(s string) string {
 
 	// Blockquotes
 	s = reBlockquote.ReplaceAllString(s, "")
+
+	// Tables: drop separator rows, reformat data rows as "cell · cell · cell"
+	s = reTableSeparator.ReplaceAllString(s, "")
+	s = reTableRow.ReplaceAllStringFunc(s, func(match string) string {
+		inner := strings.TrimSpace(match)
+		inner = strings.Trim(inner, "|")
+		cells := strings.Split(inner, "|")
+		out := make([]string, 0, len(cells))
+		for _, c := range cells {
+			if c = strings.TrimSpace(c); c != "" {
+				out = append(out, c)
+			}
+		}
+		return strings.Join(out, " · ")
+	})
 
 	// Collapse 3+ consecutive blank lines into 2
 	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
