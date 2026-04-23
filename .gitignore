@@ -38,6 +38,11 @@ vendor/
 config.toml
 config.test.toml
 .env
+
+# Runtime state / local-only Claude Code settings (may contain path-scoped
+# bash permissions that embed secrets like API keys — never commit).
+.config.toml.lock
+.claude/settings.local.json
 *.local.toml
 
 # CC-Connect runtime state
