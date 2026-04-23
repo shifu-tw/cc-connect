@@ -180,6 +180,7 @@ type Engine struct {
 	hooks              *HookManager
 	cronScheduler      *CronScheduler
 	heartbeatScheduler *HeartbeatScheduler
+	eventLog           *EventLogger
 
 	commands *CommandRegistry
 	skills   *SkillRegistry
@@ -372,11 +373,17 @@ func (pp *pendingPermission) resolve() {
 
 func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath string, lang Language) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
+	// Derive logs dir as sibling of sessions dir (e.g. ~/.cc-connect/sessions → ~/.cc-connect/logs).
+	var logsDir string
+	if sessionStorePath != "" {
+		logsDir = filepath.Join(filepath.Dir(sessionStorePath), "logs")
+	}
 	e := &Engine{
 		name:                  name,
 		agent:                 ag,
 		platforms:             platforms,
 		sessions:              NewSessionManager(sessionStorePath),
+		eventLog:              newEngineEventLogger(logsDir, name),
 		ctx:                   ctx,
 		cancel:                cancel,
 		i18n:                  NewI18n(lang),
@@ -2182,6 +2189,13 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx)
 	if elapsed := time.Since(sendStart); elapsed >= slowAgentSend {
 		slog.Warn("slow agent send", "elapsed", elapsed, "session", msg.SessionKey, "content_len", len(msg.Content))
+		if e.eventLog != nil {
+			e.eventLog.WriteError("slow_agent_send", "agent Send() took unusually long", map[string]any{
+				"session_key": msg.SessionKey,
+				"elapsed_ms":  elapsed.Milliseconds(),
+				"user_name":   msg.UserName,
+			})
+		}
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
 
@@ -2429,6 +2443,16 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		}
 		if err != nil {
 			slog.Error("failed to start interactive session", "error", err, "elapsed", startElapsed)
+			if e.eventLog != nil {
+				e.eventLog.WriteError("session_spawn_failed", "agent.StartSession returned error (including retry-as-fresh)", map[string]any{
+					"session_key":       sessionKey,
+					"failed_session_id": startSessionID,
+					"platform":          p.Name(),
+					"agent":              agent.Name(),
+					"elapsed_ms":         startElapsed.Milliseconds(),
+					"error":              err.Error(),
+				})
+			}
 			e.hooks.Emit(HookEvent{
 				Event:      HookEventError,
 				SessionKey: sessionKey,
@@ -3019,6 +3043,39 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				"input_tokens", event.InputTokens,
 				"output_tokens", event.OutputTokens,
 			)
+			if e.eventLog != nil {
+				platform := ""
+				if idx := strings.Index(sessionKey, ":"); idx > 0 {
+					platform = sessionKey[:idx]
+				}
+				userName := ""
+				if meta := sessions.GetUserMeta(sessionKey); meta != nil {
+					userName = meta.UserName
+				}
+				lastUserMsg := ""
+				if hist := session.GetHistory(0); len(hist) > 0 {
+					for i := len(hist) - 1; i >= 0; i-- {
+						if hist[i].Role == "user" {
+							lastUserMsg = hist[i].Content
+							break
+						}
+					}
+				}
+				e.eventLog.WriteTurn(TurnEntry{
+					SessionKey:     sessionKey,
+					SessionID:      session.ID,
+					AgentSessionID: session.GetAgentSessionID(),
+					MsgID:          msgID,
+					Platform:       platform,
+					UserName:       userName,
+					UserMessage:    lastUserMsg,
+					BotReply:       fullResponse,
+					ToolCount:      toolCount,
+					InputTokens:    event.InputTokens,
+					OutputTokens:   event.OutputTokens,
+					DurationMs:     turnDuration.Milliseconds(),
+				})
+			}
 
 			replyStart := time.Now()
 			normalizedBaseResponse := strings.TrimSpace(baseResponse)
@@ -3230,6 +3287,18 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 channelClosed:
 	// Channel closed - process exited unexpectedly
 	slog.Warn("agent process exited", "session_key", sessionKey)
+	if e.eventLog != nil {
+		partialBytes := 0
+		for _, p := range textParts {
+			partialBytes += len(p)
+		}
+		e.eventLog.WriteError("agent_died_unexpectedly", "agent subprocess exited mid-turn (stdout channel closed without EventResult)", map[string]any{
+			"session_key":   sessionKey,
+			"msg_id":        msgID,
+			"elapsed_ms":    time.Since(turnStart).Milliseconds(),
+			"partial_bytes": partialBytes,
+		})
+	}
 	e.notifyDroppedQueuedMessages(state, fmt.Errorf("agent process exited"))
 	e.cleanupInteractiveState(sessionKey, state)
 

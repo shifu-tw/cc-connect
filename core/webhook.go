@@ -252,6 +252,12 @@ func (ws *WebhookServer) executePrompt(engine *Engine, sessionKey, prompt string
 			return
 		}
 		slog.Warn("webhook: session busy, queue full — prompt dropped", "event", event, "session_key", sessionKey)
+		if engine.eventLog != nil {
+			engine.eventLog.WriteError("webhook_queue_full", "webhook prompt dropped: session busy and queue full", map[string]any{
+				"session_key": sessionKey,
+				"event":       event,
+			})
+		}
 		if !silent {
 			engine.send(targetPlatform, replyCtx, fmt.Sprintf("🪝 ⚠️ session busy, skipped: %s", event))
 		}

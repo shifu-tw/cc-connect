@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -384,6 +385,22 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 
 	content = core.StripMarkdown(content)
 
+	// Rule 13 violation scan — alert on implementation-leak phrases in outbound text.
+	// Does NOT strip the text (observe-only for now); see SKILL.md 硬規則 13.
+	if matches := scanRule13Violations(content); len(matches) > 0 {
+		preview := content
+		if len(preview) > 300 {
+			preview = preview[:300] + "…"
+		}
+		core.AlertError("rule13_violation", "bot 回覆含實作細節洩漏關鍵詞（觀察模式，未修改內容）", map[string]any{
+			"target_id":    rc.targetID,
+			"target_type":  rc.targetType,
+			"matches":      matches,
+			"text_preview": preview,
+			"text_len":     len(content),
+		})
+	}
+
 	// LINE text message limit is 5000 characters
 	messages := splitMessage(content, 5000)
 	for _, text := range messages {
@@ -398,6 +415,12 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 			}, "",
 		)
 		if err != nil {
+			core.AlertError("line_push_failed", "LINE PushMessage API returned error", map[string]any{
+				"target_id":   rc.targetID,
+				"target_type": rc.targetType,
+				"content_len": len(text),
+				"error":       err.Error(),
+			})
 			return fmt.Errorf("line: push message: %w", err)
 		}
 	}
@@ -447,4 +470,31 @@ func firstN(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+// rule13Patterns — phrases the bot should never reveal to the end user
+// (see joey-brain SKILL.md 硬規則 13). Intentionally scoped to high-signal
+// implementation leaks; generic words like "artifact" are avoided since they
+// can appear in legitimate content. Update as you observe new violations.
+var rule13Patterns = []*regexp.Regexp{
+	regexp.MustCompile(`thread_id`),
+	regexp.MustCompile(`phase\s*=\s*awaiting-`),
+	regexp.MustCompile(`\bt_jw_`),
+	regexp.MustCompile(`\bt_ins_`),
+	regexp.MustCompile(`\btjw_`),
+	regexp.MustCompile(`\bins_2\d{3}`),
+	regexp.MustCompile(`context bundle`),
+	regexp.MustCompile(`CDN\s*快取`),
+	regexp.MustCompile(`CloudFront`),
+	regexp.MustCompile(`InsForge`),
+}
+
+func scanRule13Violations(s string) []string {
+	var hits []string
+	for _, re := range rule13Patterns {
+		if m := re.FindString(s); m != "" {
+			hits = append(hits, m)
+		}
+	}
+	return hits
 }
