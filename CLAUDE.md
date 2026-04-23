@@ -1,5 +1,10 @@
 # CC-Connect Development Guide
 
+> **🛠️ 維運情境（cc-connect-ops / Telegram bot @Threader111bot 啟動的 Claude）**：
+> 如果使用者問的是**系統狀態、錯誤、bot 沒回、為什麼慢、log 分析**這類運維問題，
+> **先 Read `docs/OPS.md`** 再動手。那份手冊有 log 路徑、error category 清單、常見問題 SOP。
+> 開發 cc-connect 本身（改 code、加 feature、修 bug）才看本檔下方內容。
+
 ## Project Overview
 
 CC-Connect is a bridge that connects AI coding agents (Claude Code, Codex, Gemini CLI, Cursor, etc.) with messaging platforms (Feishu/Lark, Telegram, Discord, Slack, DingTalk, WeChat Work, QQ, LINE). Users interact with their coding agent through their preferred messaging app.
